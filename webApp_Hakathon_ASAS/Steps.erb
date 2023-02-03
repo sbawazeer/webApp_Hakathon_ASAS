@@ -1,0 +1,235 @@
+
+### Deployment
+#### Terraform
+
+Use terraform to provision VPC, SLB, EIP, ESS, ECS, Redis and rdsDB instances that used 
+
+
+#### Step 1: Install Apache HTTP Server and PHP on ECS
+
+## Logon to ECS via SSH, 
+
+ssh root@<EIP_ECS>
+
+##Run the following command to install required utilities on the instance: 
+
+yum install -y sysbench unzip zip dstat
+
+##Run  to install the Apache HTTP server:
+
+yum -y install httpd
+
+##Install PHP
+
+##List available versions of PHP:
+
+dnf module list php
+
+dnf module reset php
+dnf module enable php:7.4 -y
+dnf install -y php php-opcache php-gd php-curl php-mysqlnd
+dnf install -y php-bcmath php-mbstring php-xmlwriter php-xmlreader php-cli php-ldap php-zip php-fileinfo
+```
+#restart Apache HTTP Server:
+
+service httpd restart
+
+##Configure to auto start httpd service when ECS restarting:
+
+chmod +x /etc/rc.d/rc.local
+vim /etc/rc.d/rc.local
+
+##Add the line at the end and save:
+
+service httpd restart
+
+##Create a PHP file to verify the PHP is working:
+
+vim /var/www/html/info.php
+
+##Then input the following content in this info.php file, then save and exit.
+
+<?php
+phpinfo();
+?>
+
+##open the following URL in a Web browser (Note: Replace the <ECS_EIP> 
+http://<ECS_EIP>/info.php
+
+#### Step 2: Install and configure Wordpress on ECS
+
+mkdir -p /opt/WP  
+cd /opt/WP 
+wget https://wordpress.org/latest.tar.gz 
+tar -xzvf latest.tar.gz 
+##Run the following commands in sequence to configure WordPress to access ApsaraDB for rdsDB:
+
+cd /opt/WP/wordpress/ 
+cp wp-config-sample.php wp-config.php 
+vim wp-config.php 
+
+##Complete the database configurations as follows: 
+
+| Setting | Value & description |
+| --- | --- |
+| DB_NAME | The name of the ApsaraDB for rdsDB database that we created. 
+| DB_USER | The user name of the database account we created. 
+| DB_PASSWORD | The password of the database account we created within Terraform script.
+| DB_HOST | The VPC-facing endpoint of the ApsaraDB for rdsDB cluster 
+#Endpoint on rdsDB web console:
+
+##copy the wordpress folder to the /var/www/html/ path: 
+cd /var/www/html 
+cp -rf /opt/WP/wordpress/* /var/www/html/ 
+
+##Open URL in a Web browser to initialize WordPress: 
+
+http://<ECS_EIP>
+
+---
+#### Step 3: Configure Redis caching
+##download the Redis object cache plugin and unzip the plugin package: 
+
+cd /opt/WP
+wget https://downloads.wordpress.org/plugin/redis-cache.2.0.18.zip 
+unzip redis-cache.2.0.18.zip 
+
+## copy the redis-cache folder to the ``/var/www/html/wp-content/plugins/`` path and configure WordPress to access ApsaraDB for Redis:
+cp -rf redis-cache /var/www/html/wp-content/plugins/ 
+vim /var/www/html/wp-config.php
+
+###Complete the settings as follows: 
+
+| Setting | Value & Description |
+| --- | --- |
+| WP_REDIS_HOST | The internal endpoint of the ApsaraDB for Redis instance 
+| WP_REDIS_PORT | The port number.  |
+| WP_REDIS_PASSWORD | The password for connecting to the instance.  |
+
+// Redis settings
+define( 'WP_REDIS_HOST', '<Redis URL>' );
+define( 'WP_REDIS_CLIENT', 'predis' );
+define( 'WP_REDIS_PORT', '6379' );
+define( 'WP_REDIS_DATABASE', '0');
+define( 'WP_REDIS_PASSWORD', 'test_redis:N1cetest' );
+
+##copy the object-cache configuration file to the /var/www/html/wp-content/ path:
+
+cp /var/www/html/wp-content/plugins/redis-cache/includes/object-cache.php /var/www/html/wp-content/ 
+
+## enable Redis object cache. 
+
+
+##Verify that the plugin status is Connected. Click Flush Cache to synchronize cache data to the ApsaraDB for Redis instance.
+
+Now, our cloud native Wordpress has been setup successfully. we can visit it via SLB EIP:
+
+http://<SLB_EIP>/
+
+#### Step 4 : Make custom ECS image for auto scaling
+
+##Log on to the ECS console. Click "Images" in the left-side navigation pane, then Click "Create Now".
+
+- Select "Instance", select the target ECS that with WordPress installed previously, enter a name and a description for the image, and then click "Create". 
+- Wait until the image creation progress becomes 100%. 
+---
+#### Step 5 : Setup Auto Scaling (ESS) for ECS auto scaling
+##to enable Alibaba Cloud Auto Scaling: 
+
+- Log on to the Auto Scaling console. Click "Create Scaling Group".
+
+- Select "Create from Scratch" and click "Start Creation". 
+
+- In the "Create Scaling Group" section, complete the settings as follows: 
+
+| Setting | Value & Description |
+| --- | --- |
+| Scaling Group Name   | wp_auto_scaling |
+| Instance Configuration Source | Create from Scratch |
+| Instance Removing Policy | For "Filter First", select "Earliest Instance Created Using Scaling Configuration". For "Then Remove from Results", select "Most Recent Created Instance". |
+| Minimum Number of Instances  | 2 |
+| Maximum Number of Instances  | 5 |
+| Default Cooldown Time (Seconds)  | 300 |
+| Network Type | VPC |
+| Multi-zone Scaling Policy  | Balanced Distribution Policy  |
+| Instance Reclaim Mode  | Release Mode |
+| VPC | Select the VPC created before by Terraform |
+| Select VSwitch | Select all the VSwitches created before by Terraform. There are 2 VSW. |
+| Associate SLB Instance | Select the SLB created before by Terraform. |
+
+
+## "OK" to finish the creation of the scaling group.
+
+##Click "Add Scaling Configuration".
+
+- Complete the settings as following:
+
+| Setting | Value & description |
+| --- | --- |
+| Billing Method | Pay-As-we-Go |
+| Instance Type | ecs.g6.xlarge and ecs.c6.xlarge, 
+| Image | Click "Custom Image" and select the "wp_image" image that WE created |
+| Storage | Select "Ultra Disk" and "40 GiB" for the system disk. Click "Add Disk" and select "Ultra Disk" and "100 GiB" for the data disk. |
+| Security Group |  the security group that WE created . |
+
+#In the "Logon Credentials" section, select “Inherit Password from Image”. 
+##In the "Scaling Configuration Name" field, we enter a name for the scaling configuration.
+## we use wp_as_group. Then click "Create".
+
+## Wait until the success message appears. Click "Enable Configuration" and "OK" to enable the scaling configuration.
+
+##Click the "Instances", "Manually Added" tab and then click "Add Existing Instances".
+##WE Add the ECS that WE installed WordPress .
+
+- Follow the following steps to create 2 scaling rules (ADD and DROP).
+
+| Setting | Value & description |
+| --- | --- |
+| Name | ADD1 |
+| Rule Type | Simple Scaling Rule |
+| Operation | Add 1 Instances |
+
+| Setting | Value & description |
+| --- | --- |
+| Name | DROP1 |
+| Rule Type | Simple Scaling Rule |
+| Operation | Remove 1 Instances |
+
+WE Follow the following steps to create 2 event triggered tasks mapping to the scaling rules respectively (CPU busy to ADD, CPU idle to DROP).
+
+| Setting | Value & description |
+| --- | --- |
+| Task Name | cpu_busy |
+| Resource Monitored | Select the "wp_auto_scaling" scaling group we created  |
+| Monitoring Type | System Monitoring |
+| Monitoring Metric | (ECS) CPU Utilization |
+| Condition | Average >= Threshold 70% |
+| Triggered Rule | Select the "ADD1" rule we created  |
+
+| Setting | Value & description |
+| --- | --- |
+| Task Name | cpu_idle |
+| Resource Monitored | Select the "wp_auto_scaling" scaling group we created  |
+| Monitoring Type | System Monitoring |
+| Monitoring Metric | (ECS) CPU Utilization |
+| Condition | Average <= Threshold 50% |
+| Triggered Rule | Select the "DROP1" rule we created |
+
+
+##we check that the statuses of new scaling tasks are both **Normal**.
+
+#### Step 6 : Simulate fluctuating traffic to trigger auto scaling
+
+## Modify the auto scaling event-triggered task "cpu_busy" with the condition to "Maximum >= 70%"
+
+##Log on to the ECS with EIP bound before, and run the sysbench to simulate the high CPU workload
+
+sysbench cpu --cpu-max-prime=4000000 --threads=4 --time=1000 run
+
+##After for a while (since the default setting is "triggered after 3 times for each 1 minute 
+##reference period", so please be patient to wait at least 3 minutes), verify the auto scaling 
+##event triggered with a new instance added
+
+##After for a while, verify the SLB instance is attached with 3 ECS instances.
+
+## Then we can "ctrl + C" to stop the sysbench workload, and verify the ECS count backs to 2 
